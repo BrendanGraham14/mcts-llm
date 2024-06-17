@@ -25,6 +25,8 @@ There are a few ways we can make our selection:
 2. Importance sampling (sample from the set of candidates, weighted by their UCT score)
 3. Pairwise importance sampling (sample the max from a pair of nodes from the set of candidates, weighted by the difference between the pair's UCT scores)
 
+The authors mention that they perform greedy selection in the paper. In their [repo](https://github.com/trotsky1997/MathBlackBox/blob/main/gen_mcts_dpo.py#L182), they also perform pairwise sampling and save the (question, answer1, answer2) tuples for use in DPO.
+
 ### Expand the node
 
 Expansion involves several steps:
