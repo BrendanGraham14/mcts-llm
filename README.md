@@ -10,14 +10,14 @@ In a MCTSr tree, nodes correspond to attempted answers, and edges correspond to 
 
 
 ### Initialize
-Generate a solution to the problem. This is generally a "dummy" solution (e.g. "I don't know").
+Generate an solution to the problem. This paper uses a "dummy" solution (e.g. `"I don't know"`).
 
 ### Select a node to expand
 We gather a set of candidate nodes which haven't been fully expanded.
 
 A node is fully expanded if either:
-a) it has `max_children`
-b) any of its children have a Q value which is greater than its own
+1. it has `max_children`
+2. any of its children have a Q value which is greater than its own
 
 Once we've gathered the candidates, we compute UCT scores for each candidate node.
 There are a few ways we can make our selection:
