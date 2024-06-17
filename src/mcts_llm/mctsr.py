@@ -7,6 +7,10 @@ Implements the MCTS + Self-Refine algorithm from
 Carlo Tree Self-refine with LLaMa-3 8B: A Technical Report`
 by Zhang et. al.
 
+The authors' [repo](https://github.com/trotsky1997/MathBlackBox) uses critiques,
+refinements, and parent nodes' answers as conversation history.
+I haven't tried it yet.
+
 """
 
 import random
