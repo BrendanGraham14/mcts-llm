@@ -38,7 +38,7 @@ Expansion involves several steps:
 
 
 # Results
-## [AIME 2024](./results/AIME_2024.md)
+## [AIME 2024](./results/AIME_2024.csv)
 - `max_rollouts=8`
 - `max_children=2`
 
