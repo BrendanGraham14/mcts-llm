@@ -3,7 +3,6 @@ from openai.types.chat.chat_completion import ChatCompletion
 
 import os
 import openai
-import anthropic
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -32,11 +31,7 @@ def _get_openai_client(base_url: str | None = None) -> openai.Client:
     return openai.Client(api_key=api_key, base_url=base_url)
 
 
-def _get_anthropic_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=get_anthropic_api_key())
-
-
-def openai_response(
+def openai_chat_completion(
     messages: list[ChatCompletionMessageParam],
     model: str,
     base_url: str | None = None,

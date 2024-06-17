@@ -13,27 +13,16 @@ import random
 import math
 from collections import deque
 from enum import Enum
-from .llm import openai_response
+from .llm import openai_chat_completion
 from pydantic import BaseModel
 import tqdm
+from .prompt_configs import (
+    llama_3_8b_prompt_config,
+    gpt_4o_prompt_config,
+    RefineResponse,
+)
 
 ROOT_UCT_SCORE = 10_000
-
-CRITIC_SYSTEM_PROMPT = "Provide a detailed and constructive critique to improve the answer. Highlight specific areas that need refinement or correction."
-REFINE_SYSTEM_PROMPT = """# Instruction
-Refine the answer based on the critique. Your refined answer should be a direct and concise solution to the problem.
-
-## Additional guidelines
-- Your response should not refer to or discuss the criticisms.
-- Do not repeat the problem statement.
-- Respond with only the answer.
-"""
-
-EVALUATE_SYSTEM_PROMPT = (
-    "Provide a reward score between -100 and 100 for the answer quality, using the strictest standards. "
-    "Do not give a full score above 95. Make sure the reward score is an integer. "
-    "Return *ONLY* the score."
-)
 
 
 class MCTSNode(BaseModel):
@@ -76,103 +65,17 @@ class MCTSr(BaseModel):
     selected_nodes: list[MCTSNode] = []
 
     def self_refine(self, node: MCTSNode) -> MCTSNode:
-        critique_response = openai_response(
-            messages=[
-                {
-                    "role": "system",
-                    "content": CRITIC_SYSTEM_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": "\n\n".join(
-                        [
-                            f"<problem>\n{self.problem}\n</problem>",
-                            f"<current_answer>\n{node.answer}\n</current_answer>",
-                        ]
-                    ),
-                },
-            ],
-            model="accounts/fireworks/models/llama-v3-8b-instruct",
-            base_url="https://api.fireworks.ai/inference/v1",
-            max_tokens=4000,
-        )
-        critique = critique_response.choices[0].message.content
-        assert critique is not None
-        self.critiques.append(critique)
+        raise NotImplementedError()
 
-        refined_answer_response = openai_response(
-            messages=[
-                {
-                    "role": "system",
-                    "content": REFINE_SYSTEM_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": "\n\n".join(
-                        [
-                            f"<problem>\n{self.problem}\n</problem>",
-                            f"<current_answer>\n{node.answer}\n</current_answer>",
-                            f"<critique>\n{critique}\n</critique>",
-                        ]
-                    ),
-                },
-            ],
-            model="accounts/fireworks/models/llama-v3-8b-instruct",
-            base_url="https://api.fireworks.ai/inference/v1",
-            max_tokens=4000,
-        )
-        refined_answer = refined_answer_response.choices[0].message.content
-        assert refined_answer is not None
-        self.refinements.append(refined_answer)
-
-        return MCTSNode(answer=refined_answer, parent=node)
+    def _evaluate_answer(self, node: MCTSNode) -> float:
+        raise NotImplementedError()
 
     def self_evaluate(self, node: MCTSNode):
         """Evaluate the quality of the answer. Sample `num_samples` times and average the results."""
 
         rewards = []
         for _ in range(self.num_reward_samples):
-            messages = [
-                {
-                    "role": "system",
-                    "content": EVALUATE_SYSTEM_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": "\n\n".join(
-                        [
-                            f"<problem>\n{self.problem}\n</problem>",
-                            f"<answer>\n{node.answer}\n</answer>",
-                        ]
-                    ),
-                },
-            ]
-            for attempt in range(3):
-                try:
-                    response = openai_response(
-                        messages=messages,
-                        model="accounts/fireworks/models/llama-v3-8b-instruct",
-                        base_url="https://api.fireworks.ai/inference/v1",
-                        max_tokens=4000,
-                    )
-                    assert response.choices[0].message.content is not None
-                    reward = int(response.choices[0].message.content)
-                    break
-                except ValueError:
-                    messages.extend(
-                        [
-                            {
-                                "role": "assistant",
-                                "content": response.choices[0].message.content,
-                            },
-                            {
-                                "role": "user",
-                                "content": "Failed to parse reward as an integer.",
-                            },
-                        ]
-                    )
-                    if attempt == 2:
-                        raise
+            reward = self._evaluate_answer(node)
 
             if reward > self.reward_limit:
                 reward -= self.excess_reward_penalty
@@ -281,6 +184,200 @@ class MCTSr(BaseModel):
 
     def print(self):
         print_tree(self.root)
+
+
+class MCTSrLlama38B(MCTSr):
+    def self_refine(self, node: MCTSNode) -> MCTSNode:
+        critique_response = openai_chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": llama_3_8b_prompt_config.critic_system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": "\n\n".join(
+                        [
+                            f"<problem>\n{self.problem}\n</problem>",
+                            f"<current_answer>\n{node.answer}\n</current_answer>",
+                        ]
+                    ),
+                },
+            ],
+            model=llama_3_8b_prompt_config.model,
+            base_url=llama_3_8b_prompt_config.base_url,
+            max_tokens=4000,
+        )
+        critique = critique_response.choices[0].message.content
+        assert critique is not None
+        self.critiques.append(critique)
+
+        refined_answer_response = openai_chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": llama_3_8b_prompt_config.refine_system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": "\n\n".join(
+                        [
+                            f"<problem>\n{self.problem}\n</problem>",
+                            f"<current_answer>\n{node.answer}\n</current_answer>",
+                            f"<critique>\n{critique}\n</critique>",
+                        ]
+                    ),
+                },
+            ],
+            model=llama_3_8b_prompt_config.model,
+            base_url=llama_3_8b_prompt_config.base_url,
+            max_tokens=4000,
+        )
+        refined_answer = refined_answer_response.choices[0].message.content
+        assert refined_answer is not None
+        self.refinements.append(refined_answer)
+
+        return MCTSNode(answer=refined_answer, parent=node)
+
+    def _evaluate_answer(self, node: MCTSNode) -> float:
+        messages = [
+            {
+                "role": "system",
+                "content": llama_3_8b_prompt_config.evaluate_system_prompt,
+            },
+            {
+                "role": "user",
+                "content": "\n\n".join(
+                    [
+                        f"<problem>\n{self.problem}\n</problem>",
+                        f"<answer>\n{node.answer}\n</answer>",
+                    ]
+                ),
+            },
+        ]
+        for attempt in range(3):
+            try:
+                response = openai_chat_completion(
+                    messages=messages,
+                    model=llama_3_8b_prompt_config.model,
+                    base_url=llama_3_8b_prompt_config.base_url,
+                    max_tokens=4000,
+                )
+                assert response.choices[0].message.content is not None
+                return int(response.choices[0].message.content)
+            except ValueError:
+                messages.extend(
+                    [
+                        {
+                            "role": "assistant",
+                            "content": response.choices[0].message.content,
+                        },
+                        {
+                            "role": "user",
+                            "content": "Failed to parse reward as an integer.",
+                        },
+                    ]
+                )
+                if attempt == 2:
+                    raise
+
+
+class MCTSrGPT4o(MCTSr):
+    def self_refine(self, node: MCTSNode) -> MCTSNode:
+        critique_response = openai_chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": gpt_4o_prompt_config.critic_system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": "\n\n".join(
+                        [
+                            f"<problem>\n{self.problem}\n</problem>",
+                            f"<current_answer>\n{node.answer}\n</current_answer>",
+                        ]
+                    ),
+                },
+            ],
+            model=gpt_4o_prompt_config.model,
+            max_tokens=4000,
+        )
+        critique = critique_response.choices[0].message.content
+        assert critique is not None
+        self.critiques.append(critique)
+
+        refined_answer_response = openai_chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": gpt_4o_prompt_config.refine_system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": "\n\n".join(
+                        [
+                            f"<problem>\n{self.problem}\n</problem>",
+                            f"<current_answer>\n{node.answer}\n</current_answer>",
+                            f"<critique>\n{critique}\n</critique>",
+                        ]
+                    ),
+                },
+            ],
+            model=gpt_4o_prompt_config.model,
+            max_tokens=4000,
+            response_format={"type": "json_object"},
+        )
+        refined_answer = RefineResponse.model_validate_json(
+            refined_answer_response.choices[0].message.content
+        )
+        self.refinements.append(refined_answer)
+
+        return MCTSNode(
+            answer=f"# Thought {refined_answer.thought}\n\n# Answer\n{refined_answer.answer}",
+            parent=node,
+        )
+
+    def _evaluate_answer(self, node: MCTSNode) -> float:
+        messages = [
+            {
+                "role": "system",
+                "content": gpt_4o_prompt_config.evaluate_system_prompt,
+            },
+            {
+                "role": "user",
+                "content": "\n\n".join(
+                    [
+                        f"<problem>\n{self.problem}\n</problem>",
+                        f"<answer>\n{node.answer}\n</answer>",
+                    ]
+                ),
+            },
+        ]
+        for attempt in range(3):
+            try:
+                response = openai_chat_completion(
+                    messages=messages,
+                    model=gpt_4o_prompt_config.model,
+                    max_tokens=4000,
+                )
+                assert response.choices[0].message.content is not None
+                return int(response.choices[0].message.content)
+            except ValueError:
+                messages.extend(
+                    [
+                        {
+                            "role": "assistant",
+                            "content": response.choices[0].message.content,
+                        },
+                        {
+                            "role": "user",
+                            "content": "Failed to parse reward as an integer.",
+                        },
+                    ]
+                )
+                if attempt == 2:
+                    raise
 
 
 def print_tree(node: MCTSNode | None, level: int = 0):
