@@ -14,17 +14,35 @@ import math
 from collections import deque
 from enum import Enum
 from .llm import openai_response
+from pydantic import BaseModel
+import tqdm
 
 ROOT_UCT_SCORE = 10_000
 
+CRITIQUE_SYSTEM_PROMPT = (
+    "Provide a reflective or critical comment to improve the answer."
+)
+REFINE_SYSTEM_PROMPT = """# Instruction
+Refine the answer based on the critique. Your refined answer should be a *direct* and *concise* solution to the problem.
 
-class MCTSNode:
-    def __init__(self, answer: str, parent: MCTSNode | None = None):
-        self.answer = answer
-        self.parent = parent
-        self.children: list[MCTSNode] = []
-        self.visits = 0
-        self.Q: float = 0
+## Additional guidelines
+- Your response should not refer to or discuss the criticisms.
+- Do not repeat the problem statement.
+"""
+
+EVALUATE_SYSTEM_PROMPT = (
+    "Provide a reward score between -100 and 100 for the answer quality, using the strictest standards. "
+    "Do not give a full score above 95. Make sure the reward score is an integer. "
+    "Return *ONLY* the score."
+)
+
+
+class MCTSNode(BaseModel):
+    answer: str
+    parent: MCTSNode | None = None
+    children: list[MCTSNode] = []
+    visits: int = 0
+    Q: float = 0
 
     def add_child(self, child_node: MCTSNode):
         self.children.append(child_node)
@@ -39,41 +57,40 @@ class SelectionPolicy(Enum):
     PAIRWISE_IMPORTANCE_SAMPLING = 3
 
 
-class MCTSr:
-    def __init__(
-        self,
-        problem: str,
-        max_rollouts: int,
-        exploration_constant: float = 1.0,
-        max_children: int = 2,
-        epsilon: float = 1e-10,
-        reward_limit: int = 95,
-        excess_reward_penalty: int = 5,
-        selection_policy: SelectionPolicy = SelectionPolicy.IMPORTANCE_SAMPLING,
-    ):
-        self.problem = problem
-        self.max_rollouts = max_rollouts
-        self.exploration_constant = exploration_constant
-        self.root = MCTSNode("I don't know.")
-        self.max_children = max_children
+class MCTSr(BaseModel):
+    problem: str
+    max_rollouts: int
+    exploration_constant: float = 1.0
+    max_children: int = 2
+    epsilon: float = 1e-10
+    reward_limit: int = 95
+    excess_reward_penalty: int = 5
+    selection_policy: SelectionPolicy = SelectionPolicy.IMPORTANCE_SAMPLING
+    num_reward_samples: int = 3
 
-        self.reward_limit = reward_limit
-        self.excess_reward_penalty = excess_reward_penalty
-        self.selection_policy = selection_policy
+    root: MCTSNode = MCTSNode(answer="I don't know.")
 
-        # For numerical stability
-        self.epsilon = epsilon
+    # Logs
+    critiques: list[str] = []
+    refinements: list[str] = []
+    rewards: list[float] = []
+    selected_nodes: list[MCTSNode] = []
 
     def self_refine(self, node: MCTSNode) -> MCTSNode:
         critique_response = openai_response(
             messages=[
                 {
                     "role": "system",
-                    "content": "Please provide a reflective or critical comment to improve the answer.",
+                    "content": CRITIQUE_SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",
-                    "content": f"# Problem\n{self.problem}\n\n# Current answer\n{node.answer}",
+                    "content": "\n\n".join(
+                        [
+                            f"<problem>\n{self.problem}\n</problem>",
+                            f"<current_answer>\n{node.answer}\n</current_answer>",
+                        ]
+                    ),
                 },
             ],
             model="accounts/fireworks/models/llama-v3-8b-instruct",
@@ -81,16 +98,24 @@ class MCTSr:
             max_tokens=4000,
         )
         critique = critique_response.choices[0].message.content
+        assert critique is not None
+        self.critiques.append(critique)
 
         refined_answer_response = openai_response(
             messages=[
                 {
                     "role": "system",
-                    "content": "Please refine the answer based on the comment.",
+                    "content": REFINE_SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",
-                    "content": f"# Problem\n{self.problem}\n\n# Current answer\n{node.answer}\n\n# Comment\n{critique}",
+                    "content": "\n\n".join(
+                        [
+                            f"<problem>\n{self.problem}\n</problem>",
+                            f"<current_answer>\n{node.answer}\n</current_answer>",
+                            f"<critique>\n{critique}\n</critique>",
+                        ]
+                    ),
                 },
             ],
             model="accounts/fireworks/models/llama-v3-8b-instruct",
@@ -99,24 +124,28 @@ class MCTSr:
         )
         refined_answer = refined_answer_response.choices[0].message.content
         assert refined_answer is not None
+        self.refinements.append(refined_answer)
 
-        return MCTSNode(refined_answer, parent=node)
+        return MCTSNode(answer=refined_answer, parent=node)
 
     def self_evaluate(self, node: MCTSNode):
-        num_samples = 3
+        """Evaluate the quality of the answer. Sample `num_samples` times and average the results."""
+
         rewards = []
-        for _ in range(num_samples):
+        for _ in range(self.num_reward_samples):
             messages = [
                 {
                     "role": "system",
-                    "content": (
-                        "Provide a reward score between -100 and 100 for the answer quality, using the strictest standards. "
-                        "Do not give a full score above 95. Make sure the reward score is an integer. Return *ONLY* the score."
-                    ),
+                    "content": EVALUATE_SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",
-                    "content": f"# Problem\n{self.problem}\n\n# Answer\n{node.answer}",
+                    "content": "\n\n".join(
+                        [
+                            f"<problem>\n{self.problem}\n</problem>",
+                            f"<answer>\n{node.answer}\n</answer>",
+                        ]
+                    ),
                 },
             ]
             for attempt in range(3):
@@ -127,6 +156,7 @@ class MCTSr:
                         base_url="https://api.fireworks.ai/inference/v1",
                         max_tokens=4000,
                     )
+                    assert response.choices[0].message.content is not None
                     reward = int(response.choices[0].message.content)
                     break
                 except ValueError:
@@ -149,7 +179,7 @@ class MCTSr:
                 reward -= self.excess_reward_penalty
             rewards.append(reward)
 
-        avg_reward = sum(rewards) / num_samples
+        avg_reward = sum(rewards) / self.num_reward_samples
         min_reward = min(rewards)
 
         # Average worst-case and average outcomes
@@ -227,7 +257,7 @@ class MCTSr:
             raise ValueError(f"Invalid selection policy: {self.selection_policy}")
 
     def run(self):
-        for _ in range(self.max_rollouts):
+        for _ in tqdm.tqdm(range(self.max_rollouts)):
             node = self.select_node()
             child = self.self_refine(node)
             node.add_child(child)
@@ -258,7 +288,7 @@ def print_tree(node: MCTSNode | None, level: int = 0):
     if node is None:
         return
     indent = " " * level * 2
-    node_str = str(node)
+    node_str = repr(node)
     for line in node_str.split("\n"):
         print(indent + line)
     for child in node.children:
