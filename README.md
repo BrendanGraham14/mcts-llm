@@ -35,3 +35,10 @@ Expansion involves several steps:
 3. Add a new child, corresponding to the refined solution.
 4. Self-evaluate the `reward` of the new child.
 5. Backpropagate the reward from the new child through its parents, through to the root.
+
+
+# Results
+## [AIME 2024](./results/AIME_2024.md)
+- `max_rollouts=8`
+- `max_children=2`
+
