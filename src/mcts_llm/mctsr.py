@@ -19,15 +19,14 @@ import tqdm
 
 ROOT_UCT_SCORE = 10_000
 
-CRITIQUE_SYSTEM_PROMPT = (
-    "Provide a reflective or critical comment to improve the answer."
-)
+CRITIC_SYSTEM_PROMPT = "Provide a detailed and constructive critique to improve the answer. Highlight specific areas that need refinement or correction."
 REFINE_SYSTEM_PROMPT = """# Instruction
-Refine the answer based on the critique. Your refined answer should be a *direct* and *concise* solution to the problem.
+Refine the answer based on the critique. Your refined answer should be a direct and concise solution to the problem.
 
 ## Additional guidelines
 - Your response should not refer to or discuss the criticisms.
 - Do not repeat the problem statement.
+- Respond with only the answer.
 """
 
 EVALUATE_SYSTEM_PROMPT = (
@@ -81,7 +80,7 @@ class MCTSr(BaseModel):
             messages=[
                 {
                     "role": "system",
-                    "content": CRITIQUE_SYSTEM_PROMPT,
+                    "content": CRITIC_SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",
