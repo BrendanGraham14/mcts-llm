@@ -25,6 +25,7 @@ from .prompt_configs import (
     gpt_4o_prompt_config,
     RefineResponse,
 )
+import numpy as np
 
 ROOT_UCT_SCORE = 10_000
 
@@ -35,12 +36,21 @@ class MCTSNode(BaseModel):
     children: list[MCTSNode] = []
     visits: int = 0
     Q: float = 0
+    reward_samples: list[int] = []
 
     def add_child(self, child_node: MCTSNode):
         self.children.append(child_node)
 
     def __repr__(self):
         return f"MCTSNode(answer={self.answer}, Q={self.Q:.2f}, visits={self.visits})"
+
+    def add_reward(self, reward: int):
+        self.reward_samples.append(reward)
+        avg_reward = np.mean(self.reward_samples)
+        min_reward = np.min(self.reward_samples)
+
+        # Average worst-case and average outcomes
+        self.Q = (min_reward + avg_reward) / 2
 
 
 class SelectionPolicy(Enum):
@@ -64,7 +74,6 @@ class MCTSr(BaseModel):
     excess_reward_penalty: int = 5
     selection_policy: SelectionPolicy = SelectionPolicy.IMPORTANCE_SAMPLING
     initialize_strategy: InitializeStrategy = InitializeStrategy.ZERO_SHOT
-    num_reward_samples: int = 3
 
     root: MCTSNode = MCTSNode(answer="I don't know.")
 
@@ -77,25 +86,17 @@ class MCTSr(BaseModel):
     def self_refine(self, node: MCTSNode) -> MCTSNode:
         raise NotImplementedError()
 
-    def _evaluate_answer(self, node: MCTSNode) -> float:
+    def _evaluate_answer(self, node: MCTSNode) -> int:
         raise NotImplementedError()
 
     def self_evaluate(self, node: MCTSNode):
         """Evaluate the quality of the answer. Sample `num_samples` times and average the results."""
+        reward = self._evaluate_answer(node)
 
-        rewards = []
-        for _ in range(self.num_reward_samples):
-            reward = self._evaluate_answer(node)
+        if reward > self.reward_limit:
+            reward -= self.excess_reward_penalty
 
-            if reward > self.reward_limit:
-                reward -= self.excess_reward_penalty
-            rewards.append(reward)
-
-        avg_reward = sum(rewards) / self.num_reward_samples
-        min_reward = min(rewards)
-
-        # Average worst-case and average outcomes
-        node.Q = (min_reward + avg_reward) / 2
+        node.add_reward(reward)
 
     def backpropagate(self, node: MCTSNode):
         parent = node.parent
@@ -185,6 +186,7 @@ class MCTSr(BaseModel):
         self.initialize()
         for _ in tqdm.tqdm(range(self.max_rollouts)):
             node = self.select_node()
+            self.self_evaluate(node)
             child = self.self_refine(node)
             node.add_child(child)
             self.self_evaluate(child)
@@ -282,7 +284,7 @@ class MCTSrLlama38B(MCTSr):
 
         return MCTSNode(answer=refined_answer, parent=node)
 
-    def _evaluate_answer(self, node: MCTSNode) -> float:
+    def _evaluate_answer(self, node: MCTSNode) -> int:
         messages = [
             {
                 "role": "system",
@@ -399,7 +401,7 @@ class MCTSrGPT4o(MCTSr):
             parent=node,
         )
 
-    def _evaluate_answer(self, node: MCTSNode) -> float:
+    def _evaluate_answer(self, node: MCTSNode) -> int:
         messages = [
             {
                 "role": "system",
