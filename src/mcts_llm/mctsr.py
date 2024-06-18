@@ -49,6 +49,11 @@ class SelectionPolicy(Enum):
     PAIRWISE_IMPORTANCE_SAMPLING = 3
 
 
+class InitializeStrategy(Enum):
+    ZERO_SHOT = 1
+    DUMMY_ANSWER = 2
+
+
 class MCTSr(BaseModel):
     problem: str
     max_rollouts: int
@@ -58,6 +63,7 @@ class MCTSr(BaseModel):
     reward_limit: int = 95
     excess_reward_penalty: int = 5
     selection_policy: SelectionPolicy = SelectionPolicy.IMPORTANCE_SAMPLING
+    initialize_strategy: InitializeStrategy = InitializeStrategy.ZERO_SHOT
     num_reward_samples: int = 3
 
     root: MCTSNode = MCTSNode(answer="I don't know.")
@@ -162,7 +168,21 @@ class MCTSr(BaseModel):
         else:
             raise ValueError(f"Invalid selection policy: {self.selection_policy}")
 
+    def zero_shot(self) -> str:
+        """Generate a zero-shot answer."""
+        raise NotImplementedError()
+
+    def initialize(self):
+        """Generate a zero-shot answer."""
+        if self.initialize_strategy == InitializeStrategy.ZERO_SHOT:
+            self.root = MCTSNode(answer=self.zero_shot())
+        elif self.initialize_strategy == InitializeStrategy.DUMMY_ANSWER:
+            self.root = MCTSNode(answer="I don't know.")
+        else:
+            raise ValueError(f"Invalid initialize strategy: {self.initialize_strategy}")
+
     def run(self):
+        self.initialize()
         for _ in tqdm.tqdm(range(self.max_rollouts)):
             node = self.select_node()
             child = self.self_refine(node)
@@ -191,6 +211,25 @@ class MCTSr(BaseModel):
 
 
 class MCTSrLlama38B(MCTSr):
+    def zero_shot(self) -> str:
+        response = openai_chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "The user will provide a problem. Solve the problem. Think step by step.",
+                },
+                {
+                    "role": "user",
+                    "content": f"<problem>\n{self.problem}\n</problem>",
+                },
+            ],
+            model=llama_3_8b_prompt_config.model,
+            base_url=llama_3_8b_prompt_config.base_url,
+            max_tokens=4000,
+        )
+        assert response.choices[0].message.content is not None
+        return response.choices[0].message.content
+
     def self_refine(self, node: MCTSNode) -> MCTSNode:
         critique_response = openai_chat_completion(
             messages=[
@@ -287,6 +326,24 @@ class MCTSrLlama38B(MCTSr):
 
 
 class MCTSrGPT4o(MCTSr):
+    def zero_shot(self) -> str:
+        response = openai_chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "The user will provide a problem. Solve the problem. Think step by step.",
+                },
+                {
+                    "role": "user",
+                    "content": f"<problem>\n{self.problem}\n</problem>",
+                },
+            ],
+            model=gpt_4o_prompt_config.model,
+            max_tokens=4000,
+        )
+        assert response.choices[0].message.content is not None
+        return response.choices[0].message.content
+
     def self_refine(self, node: MCTSNode) -> MCTSNode:
         critique_response = openai_chat_completion(
             messages=[
